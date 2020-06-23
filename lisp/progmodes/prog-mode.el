@@ -90,6 +90,236 @@ instead."
   "Return the indentation column normally used for top-level constructs."
   (or (car prog-indentation-context) 0))
 
+;;; Text prettification library and API.
+
+(defvar-local prettify-text-alist nil
+  "Alist of text regexp prettifications.
+Each element must look like (IDENTIFIER REGEXP CHARACTER)
+or (IDENTIFIER REGEXP CHARACTER COMPOSE-PREDICATE).  The REGEXP
+can have capturing groups, in which case the first such group
+will be prettified. If there are no capturing groups, the whole
+REGEXP is prettified.
+
+The IDENTIFIER can be any symbol and should be unique to every
+package that augments `prettify-text-alist' (in order to
+remove prettifications easily with
+`prettify-text-remove-prettifications').
+
+For example: \"abc[123]\" matching \"abc1\", \"abc2\", or
+\"abc3\" could be mapped to the Unicode WORLD MAP. Note again the
+IDENTIFIER is an arbitrary Lisp symbol.
+ (my-worldmap \"abc[123]\" ?\U0001f5fa)
+
+CHARACTER can be a character, or it can be a list or vector, in
+which case it will be used to compose the new symbol as per the
+third argument of `compose-region'.
+
+The COMPOSE-PREDICATE is a function, and if it's not specified
+will default to `prettify-text-compose-predicate' which see.")
+
+(defun prettify-text-default-compose-p (start end _outer_match _true_match)
+  "Return true iff the text between START and END should be composed.
+The outer match and true match are ignored.  This is the default
+for `prettify-text-compose-predicate' which is suitable for most
+programming languages such as C or Lisp."
+  ;; Check that the chars should really be composed into a symbol.
+  (let* ((syntaxes-beg (if (memq (char-syntax (char-after start)) '(?w ?_))
+                           '(?w ?_) '(?. ?\\)))
+         (syntaxes-end (if (memq (char-syntax (char-before end)) '(?w ?_))
+                           '(?w ?_) '(?. ?\\))))
+    (not (or (memq (char-syntax (or (char-before start) ?\s)) syntaxes-beg)
+             (memq (char-syntax (or (char-after end) ?\s)) syntaxes-end)
+             (nth 8 (syntax-ppss))))))
+
+(defvar-local prettify-text-compose-predicate
+  #'prettify-text-default-compose-p
+  "A default predicate for deciding if the currently matched symbol is to be composed.
+The matched symbol is the car of one entry in
+`prettify-text-alist'.  The predicate receives the match's start
+and end positions.  The outer match (match-string 0) and true
+match (either the first capture group AKA match-string 1, or the
+outer match again) are also provided.  This predicate can be
+overridden by each `prettify-text-alist' entry.")
+
+(defun prettify-text--compose-symbol (entry)
+  "Compose a sequence of characters into a symbol, keyed on the ENTRY.
+The ENTRY is from `prettify-text-alist' which see."
+  ;; Get the inner match or the outer match if there's no capturing group.
+  (let ((start (or (match-beginning 1)
+                   (match-beginning 0)))
+        (end (or (match-end 1)
+                 (match-end 0)))
+        (true-match (or (match-string 1)
+                        (match-string 0)))
+        (outer-match (match-string 0))
+        (compose-predicate (or (nth 3 entry) prettify-text-compose-predicate)))
+    (if (and (not (equal prettify-text--current-bounds (list start end)))
+             (funcall compose-predicate start end outer-match true-match))
+        ;; That's a symbol alright, so add the composition.
+        (with-silent-modifications
+          (compose-region start end (nth 2 entry))
+          (add-text-properties
+           start end
+           `(prettify-text-start ,start prettify-text-end ,end)))
+      ;; No composition for you.  Let's actually remove any
+      ;; composition we may have added earlier and which is now
+      ;; incorrect.
+      (remove-list-of-text-properties start end
+                                      '(composition
+                                        prettify-text-start
+                                        prettify-text-end))))
+  ;; Return nil because we're not adding any face property.
+  nil)
+
+(defun prettify-text--make-keywords (alist)
+  "Make the regexp string matcher font-lock keywords from ALIST."
+  (if alist
+      (mapcar (lambda (ps)
+                ;; Collect the regexp and the symbol composer call.
+                `(,(nth 1 ps)
+                  (0 (prettify-text--compose-symbol ',ps))))
+              alist)
+    nil))
+
+(defvar-local prettify-text--keywords nil)
+
+(defvar-local prettify-text--current-bounds nil)
+
+(defcustom prettify-text-unprettify-at-point nil
+  "If non-nil, show the non-prettified text when point is on it.
+If set to the symbol `right-edge', also unprettify if point
+is immediately after the text.  The prettification will be
+reapplied as soon as point moves away from the text.  If
+set to nil, the prettification persists even when point is
+on the text."
+  :version "28.1"
+  :type '(choice (const :tag "Never unprettify" nil)
+                 (const :tag "Unprettify when point is inside" t)
+                 (const :tag "Unprettify when point is inside or at right edge" right-edge))
+  :group 'prog-mode)
+
+(defun prettify-text--post-command-hook ()
+  (cl-labels ((get-prop-as-list
+               (prop)
+               (remove nil
+                       (list (get-text-property (point) prop)
+                             (when (and (eq prettify-text-unprettify-at-point 'right-edge)
+                                        (not (bobp)))
+                               (get-text-property (1- (point)) prop))))))
+    ;; Re-apply prettification to the previous text.
+    (when (and prettify-text--current-bounds
+	       (or (< (point) (car prettify-text--current-bounds))
+		   (> (point) (cadr prettify-text--current-bounds))
+		   (and (not (eq prettify-text-unprettify-at-point 'right-edge))
+			(= (point) (cadr prettify-text--current-bounds)))))
+      ;; Adjust the bounds in case either end is invalid.
+      (setf (car prettify-text--current-bounds)
+            (max (car prettify-text--current-bounds) (point-min))
+            (cadr prettify-text--current-bounds)
+            (min (cadr prettify-text--current-bounds) (point-max)))
+      (apply #'font-lock-flush prettify-text--current-bounds)
+      (setq prettify-text--current-bounds nil))
+    ;; Unprettify the current text
+    (when-let* ((c (get-prop-as-list 'composition))
+	        (s (get-prop-as-list 'prettify-text-start))
+	        (e (get-prop-as-list 'prettify-text-end))
+	        (s (apply #'min s))
+	        (e (apply #'max e)))
+      (with-silent-modifications
+	(setq prettify-text--current-bounds (list s e))
+        (remove-text-properties s e '(composition nil))))))
+
+;;;###autoload
+(defun prettify-text-add-prettification-entry (entry)
+  "Add ENTRY to `prettify-text-alist' for the current buffer.
+ENTRY is formatted as per `prettify-text-alist' (which see).
+Duplicates according to `equal' will not be added.
+
+The ENTRY's identifier should be unique to each user of this API.
+
+If successful, `prettify-text-mode' will be ENABLED."
+  (setq-local prettify-text-alist (cl-adjoin entry
+                                                prettify-text-alist
+                                                :test #'equal))
+  (when prettify-text-alist
+    (turn-on-prettify-text-highlighting)))
+
+;;;###autoload
+(defun prettify-text-add-prettification (identifier regexp replacement &optional compose-predicate)
+  "Convenience wrapper of `prettify-text-add-prettification-entry' to prettify REGEXP with REPLACEMENT.
+IDENTIFIER should be unique to each user of this API.
+
+The optional COMPOSE-PREDICATE will override the default
+`prettify-text-compose-predicate' which see.
+
+If successful, `prettify-text-mode' will be ENABLED."
+  (prettify-text-add-prettification-entry
+   (list identifier regexp replacement compose-predicate)))
+
+;;;###autoload
+(defun prettify-text-remove-prettification (entry)
+  "Remove ENTRY to `prettify-text-alist' for the current buffer.
+ENTRY is found with an `equal' test. Returns t on success."
+  (setq-local prettify-text-alist (cl-remove entry
+                                                prettify-text-alist
+                                                :test #'equal))
+  (unless prettify-text-alist
+    (turn-off-prettify-text-highlighting)))
+
+;;;###autoload
+(defun prettify-text-remove-prettifications (identifier)
+  "Remove all IDENTIFIER entries from `prettify-text-alist' for the current buffer.
+IDENTIFIER is as per `prettify-text-alist' (which see). Returns t on success."
+  (setq-local prettify-text-alist (cl-remove identifier
+                                                prettify-text-alist
+                                                :test #'car))
+  (unless prettify-text-alist
+    (turn-off-prettify-text-highlighting)))
+
+;;;###autoload
+(defun prettify-text-remove-all-prettifications ()
+  "Remove all entries from `prettify-text-alist' for the current buffer.
+Returns t on success."
+  (setq-local prettify-text-alist nil)
+  (turn-off-prettify-text-highlighting))
+
+(defun prettify-text-mode--cleanup ()
+  (when prettify-text--keywords
+    (font-lock-remove-keywords nil prettify-text--keywords)
+    (setq prettify-text--keywords nil)))
+
+;;;###autoload
+(defun turn-off-prettify-text-highlighting ()
+  (prettify-text-mode--cleanup)
+  (remove-hook 'post-command-hook #'prettify-text--post-command-hook t)
+  (when (memq 'composition font-lock-extra-managed-props)
+    (setq font-lock-extra-managed-props (delq 'composition
+                                              font-lock-extra-managed-props))
+    (with-silent-modifications
+      (remove-text-properties (point-min) (point-max) '(composition nil))))
+  ; Return t to indicate success.
+  t)
+
+;;;###autoload
+(defun turn-on-prettify-text-highlighting ()
+  (prettify-text-mode--cleanup)
+  (when (setq prettify-text--keywords (prettify-text--make-keywords
+                                       prettify-text-alist))
+    (font-lock-add-keywords nil prettify-text--keywords)
+    (setq-local font-lock-extra-managed-props
+                (append font-lock-extra-managed-props
+                        '(composition
+                          prettify-text-start
+                          prettify-text-end)))
+    (when prettify-text-unprettify-at-point
+      (add-hook 'post-command-hook
+                #'prettify-text--post-command-hook nil t))
+    (font-lock-flush)
+  ; Return t to indicate success.
+    t))
+
+;;; Symbol prettification mode.
+
 (defvar-local prettify-symbols-alist nil
   "Alist of symbol prettifications.
 Each element looks like (SYMBOL . CHARACTER), where the symbol
