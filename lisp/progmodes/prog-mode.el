@@ -94,14 +94,14 @@ instead."
 
 (defvar-local prettify-text-alist nil
   "Alist of text regexp prettifications.
-Each element must look like (IDENTIFIER REGEXP CHARACTER)
-or (IDENTIFIER REGEXP CHARACTER COMPOSE-PREDICATE).  The REGEXP
+Each element must look like (IDENTIFIER REGEXP REPLACEMENT)
+or (IDENTIFIER REGEXP REPLACEMENT COMPOSE-PREDICATE).  The REGEXP
 can have capturing groups, in which case the first such group
 will be prettified. If there are no capturing groups, the whole
 REGEXP is prettified.
 
-The IDENTIFIER can be any symbol and should be unique to every
-package that augments `prettify-text-alist' (in order to
+The IDENTIFIER can be any Lisp symbol and should be unique to
+every package that augments `prettify-text-alist' (in order to
 remove prettifications easily with
 `prettify-text-remove-prettifications').
 
@@ -110,8 +110,8 @@ For example: \"abc[123]\" matching \"abc1\", \"abc2\", or
 IDENTIFIER is an arbitrary Lisp symbol.
  (my-worldmap \"abc[123]\" ?\U0001f5fa)
 
-CHARACTER can be a character, or it can be a list or vector, in
-which case it will be used to compose the new symbol as per the
+REPLACEMENT can be a character, or it can be a list or vector, in
+which case it will be used to compose the new visuals as per the
 third argument of `compose-region'.
 
 The COMPOSE-PREDICATE is a function, and if it's not specified
@@ -122,7 +122,7 @@ will default to `prettify-text-compose-predicate' which see.")
 The outer match and true match are ignored.  This is the default
 for `prettify-text-compose-predicate' which is suitable for most
 programming languages such as C or Lisp."
-  ;; Check that the chars should really be composed into a symbol.
+  ;; Check that the chars should really be composed into a visual replacement.
   (let* ((syntaxes-beg (if (memq (char-syntax (char-after start)) '(?w ?_))
                            '(?w ?_) '(?. ?\\)))
          (syntaxes-end (if (memq (char-syntax (char-before end)) '(?w ?_))
@@ -133,16 +133,16 @@ programming languages such as C or Lisp."
 
 (defvar-local prettify-text-compose-predicate
   #'prettify-text-default-compose-p
-  "A default predicate for deciding if the currently matched symbol is to be composed.
-The matched symbol is the car of one entry in
-`prettify-text-alist'.  The predicate receives the match's start
-and end positions.  The outer match (match-string 0) and true
+  "A default predicate for deciding if the current match is to be composed.
+The match is against an entry regexp in `prettify-text-alist'
+which see.  The predicate receives the match's start and end
+positions.  The outer match (match-string 0) and true
 match (either the first capture group AKA match-string 1, or the
 outer match again) are also provided.  This predicate can be
 overridden by each `prettify-text-alist' entry.")
 
-(defun prettify-text--compose-symbol (entry)
-  "Compose a sequence of characters into a symbol, keyed on the ENTRY.
+(defun prettify-text--compose-replacement (entry)
+  "Compose a regexp text match into a replacement, based on the ENTRY.
 The ENTRY is from `prettify-text-alist' which see."
   ;; Get the inner match or the outer match if there's no capturing group.
   (let ((start (or (match-beginning 1)
@@ -155,7 +155,7 @@ The ENTRY is from `prettify-text-alist' which see."
         (compose-predicate (or (nth 3 entry) prettify-text-compose-predicate)))
     (if (and (not (equal prettify-text--current-bounds (list start end)))
              (funcall compose-predicate start end outer-match true-match))
-        ;; That's a symbol alright, so add the composition.
+        ;; That's a match alright, so add the composition.
         (with-silent-modifications
           (compose-region start end (nth 2 entry))
           (add-text-properties
@@ -175,9 +175,9 @@ The ENTRY is from `prettify-text-alist' which see."
   "Make the regexp string matcher font-lock keywords from ALIST."
   (if alist
       (mapcar (lambda (ps)
-                ;; Collect the regexp and the symbol composer call.
+                ;; Collect the regexp with the replacement composer call.
                 `(,(nth 1 ps)
-                  (0 (prettify-text--compose-symbol ',ps))))
+                  (0 (prettify-text--compose-replacement ',ps))))
               alist)
     nil))
 
@@ -187,11 +187,10 @@ The ENTRY is from `prettify-text-alist' which see."
 
 (defcustom prettify-text-unprettify-at-point 'right-edge
   "If non-nil, show the non-prettified text when point is on it.
-If set to the symbol `right-edge', also unprettify if point
+If set to the Lisp symbol `right-edge', also unprettify if point
 is immediately after the text.  The prettification will be
-reapplied as soon as point moves away from the text.  If
-set to nil, the prettification persists even when point is
-on the text."
+reapplied as soon as point moves away from the text.  If set to
+nil, the prettification persists even when point is on the text."
   :version "28.1"
   :type '(choice (const :tag "Never unprettify" nil)
                  (const :tag "Unprettify when point is inside" t)
