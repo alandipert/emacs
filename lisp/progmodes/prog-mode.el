@@ -235,9 +235,7 @@ on the text."
 ENTRY is formatted as per `prettify-text-alist' (which see).
 Duplicates according to `equal' will not be added.
 
-The ENTRY's identifier should be unique to each user of this API.
-
-If successful, `prettify-text-mode' will be ENABLED."
+The ENTRY's identifier should be unique to each user of this API."
   (setq-local prettify-text-alist (cl-adjoin entry
                                                 prettify-text-alist
                                                 :test #'equal))
@@ -250,9 +248,7 @@ If successful, `prettify-text-mode' will be ENABLED."
 IDENTIFIER should be unique to each user of this API.
 
 The optional COMPOSE-PREDICATE will override the default
-`prettify-text-compose-predicate' which see.
-
-If successful, `prettify-text-mode' will be ENABLED."
+`prettify-text-compose-predicate' which see."
   (prettify-text-add-prettification-entry
    (list identifier regexp replacement compose-predicate)))
 
@@ -283,14 +279,14 @@ Returns t on success."
   (setq-local prettify-text-alist nil)
   (turn-off-prettify-text-highlighting))
 
-(defun prettify-text-mode--cleanup ()
+(defun prettify-text--cleanup ()
   (when prettify-text--keywords
     (font-lock-remove-keywords nil prettify-text--keywords)
     (setq prettify-text--keywords nil)))
 
 ;;;###autoload
 (defun turn-off-prettify-text-highlighting ()
-  (prettify-text-mode--cleanup)
+  (prettify-text--cleanup)
   (remove-hook 'post-command-hook #'prettify-text--post-command-hook t)
   (when (memq 'composition font-lock-extra-managed-props)
     (setq font-lock-extra-managed-props (delq 'composition
@@ -302,7 +298,7 @@ Returns t on success."
 
 ;;;###autoload
 (defun turn-on-prettify-text-highlighting ()
-  (prettify-text-mode--cleanup)
+  (prettify-text--cleanup)
   (when (setq prettify-text--keywords (prettify-text--make-keywords
                                        prettify-text-alist))
     (font-lock-add-keywords nil prettify-text--keywords)
