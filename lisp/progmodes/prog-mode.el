@@ -185,7 +185,7 @@ The ENTRY is from `prettify-text-alist' which see."
 
 (defvar-local prettify-text--current-bounds nil)
 
-(defcustom prettify-text-unprettify-at-point nil
+(defcustom prettify-text-unprettify-at-point 'right-edge
   "If non-nil, show the non-prettified text when point is on it.
 If set to the symbol `right-edge', also unprettify if point
 is immediately after the text.  The prettification will be
